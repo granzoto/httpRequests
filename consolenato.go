@@ -3,7 +3,6 @@ package main
 import (
 	//"bytes"
 	"crypto/tls"
-	"encoding/json"
 	"net/url"
 
 	//"encoding/json"
@@ -37,6 +36,18 @@ type TokenOptions struct {
 	Uses   int				`json:"uses"`
 }
 
+type LinkStatus struct {
+	Name        string
+	Url         string
+	Cost        int
+	Connected   bool
+	Configured  bool
+	Description string
+	Created     string
+}
+
+
+
 func accessConsole(method string, url string, path string, body io.Reader, user string, pass string) (string, error) {
 
 	// Define the request first
@@ -47,7 +58,8 @@ func accessConsole(method string, url string, path string, body io.Reader, user 
 
 	// If this is a POST
 	if method == "POST" {
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded; param=value")
+		req.Header.Set("Content-Type", "application/json; charset=utf-8")
+		//req.Header.Set("Content-Type", "application/x-www-form-urlencoded; param=value")
 	}
 
 	// Define request basic auth
@@ -72,7 +84,8 @@ func accessConsole(method string, url string, path string, body io.Reader, user 
 
 	strResp := string(bodyResp)
 
-	//fmt.Println("Resp Body => ", strResp)
+	fmt.Println("Resp Body => ", strResp)
+	fmt.Println("Resp Header => ", resp.Header)
 
 	return strResp, nil
 }
@@ -121,13 +134,6 @@ func main() {
 	//	fmt.Println("Error to create the claim 01 for West")
 	//}
 
-	// Create a claim token manually in west - public"
-	//ok = runCmd("skupper", "token", "create", "/tmp/token-west-renato02.yaml", "--expiry", "25m0s", "--name", "renato02", "--password", "rena-senha", "--token-type", "claim", "--uses",  "1", "-n", "west")
-	//if !ok {
-	//	fmt.Println("Error to create the claim 02 for West")
-	//}
-
-
 	//
 	// +++++ CREATE CLAIM VIA API  +++++++
 	//
@@ -137,74 +143,12 @@ func main() {
 	postPath := fmt.Sprintf("tokens?expiration=%v&uses=%d", tokenExpires, tokenUses)
 
 	//postPath := "tokens?expiration=60m&uses=3"
-	retorno, err := accessConsole("POST", PUBCONSOLE, postPath, nil, ADMUSER, ADMPASS)
+	tokenCreatedPublic, err := accessConsole("POST", PUBCONSOLE, postPath, nil, ADMUSER, ADMPASS)
 	if err != nil {
 		fmt.Println("Erro 003")
 		os.Exit(1)
 	}
-	fmt.Println("retorno ", retorno)
-
-	//// Trying json.RawMessage
-	//jsonString = `{"expiration":"", "uses":"2"}`
-	//rawJson := json.RawMessage(jsonString)
-	//jsonRawReader := bytes.NewReader(rawJson)
-	//
-	//_, err = accessConsole("POST", PUBCONSOLE, "tokens", jsonRawReader, ADMUSER, ADMPASS)
-	//if err != nil {
-	//	fmt.Println("Erro 003")
-	//	os.Exit(1)
-	//}
-	//
-	//
-	//// Try using the opts struct
-	//tokenOpts := TokenOptions{
-	//	Expiry: 20,
-	//	Uses:   4,
-	//}
-	//jsonBytes, err := json.Marshal(tokenOpts)
-	//jsonBytesReader := bytes.NewReader(jsonBytes)
-	//_, err = accessConsole("POST", PUBCONSOLE, "tokens", jsonBytesReader, ADMUSER, ADMPASS)
-	//if err != nil {
-	//	fmt.Println("Erro 004")
-	//	os.Exit(1)
-	//}
-	//
-	//// Try using url.values
-	//data := url.Values{}
-	//data.Set("expiration", "20")
-	//data.Add("uses", "20")
-	//_, err = accessConsole("POST", PUBCONSOLE, "tokens", strings.NewReader(data.Encode()), ADMUSER, ADMPASS)
-	//if err != nil {
-	//	fmt.Println("Erro 005")
-	//	os.Exit(1)
-	//}
-	//
-	//// Try using map and marshal
-	//values := map[string]string{"expiration": "20", "uses": "4"}
-	//json_data, err := json.Marshal(values)
-	//
-	//
-	//_, err = accessConsole("POST", PUBCONSOLE, "tokens", bytes.NewReader(json_data), ADMUSER, ADMPASS)
-	//if err != nil {
-	//	fmt.Println("Erro 005")
-	//	os.Exit(1)
-	//}
-	//
-	//// Try using a string as parameter
-	//jsonString = `"expiration":"20", "uses":"4"}`
-	//_, err = accessConsole("POST", PUBCONSOLE, "tokens", strings.NewReader(jsonString), ADMUSER, ADMPASS)
-	//if err != nil {
-	//	fmt.Println("Erro 006")
-	//	os.Exit(1)
-	//}
-	//
-	//// Try using parameter format
-	//jsonString = `expiration=20&uses=4`
-	//_, err = accessConsole("POST", PUBCONSOLE, "tokens", strings.NewReader(jsonString), ADMUSER, ADMPASS)
-	//if err != nil {
-	//	fmt.Println("Erro 007")
-	//	os.Exit(1)
-	//}
+	fmt.Println("Token Created in Public", tokenCreatedPublic)
 
 	// Tokens from pub
 	tokenPub, err := accessConsole("GET", PUBCONSOLE, "tokens", nil, ADMUSER, ADMPASS)
@@ -217,30 +161,34 @@ func main() {
 	//
 	// CREATE A LINK in PRIVATE
 	//
-
-	var datafromJson []TokenState
-	err = json.Unmarshal([]byte(tokenPub), &datafromJson)
-	if err != nil {
-		fmt.Println("Error while Unmarshalling data")
-	}
-	fmt.Println("Data from json")
-	fmt.Println(datafromJson)
-
-	fmt.Println("First claim available")
-	fmt.Println(datafromJson[0].Name)
-
-	// Tokens from pub
-
 	data := url.Values{}
 	data.Set("cost", "20")
-	data.Add("token", datafromJson[0].Name)
-
-	linkPriv, err := accessConsole("POST", PRIVCONSOLE, "links", strings.NewReader(data.Encode()), ADMUSER, ADMPASS)
 	if err != nil {
 		fmt.Println("Erro 010")
 		os.Exit(1)
 	}
+	_, err = accessConsole("POST", PRIVCONSOLE, "links?cost=20", strings.NewReader(tokenCreatedPublic), ADMUSER, ADMPASS)
+	if err != nil {
+		fmt.Println("Erro 010")
+		os.Exit(1)
+	}
+
+	// List links from pub
+	linkPriv, err := accessConsole("GET", PRIVCONSOLE, "links", nil, ADMUSER, ADMPASS)
+	if err != nil {
+		fmt.Println("Erro 003")
+		os.Exit(1)
+	}
 	fmt.Println("Links from Priv => ", linkPriv)
+
+	// Tokens from pub
+	tokenPub, err = accessConsole("GET", PUBCONSOLE, "tokens", nil, ADMUSER, ADMPASS)
+	if err != nil {
+		fmt.Println("Erro 003")
+		os.Exit(1)
+	}
+	fmt.Println("Tokens from pub => ", tokenPub)
+
 
 	//
 	// REMOVE TOKENS VIA DELETE
@@ -260,7 +208,5 @@ func main() {
 			}
 		}
 	}
-
-
 
 }
