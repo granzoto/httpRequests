@@ -1,16 +1,16 @@
 package main
 
 import (
+	"bytes"
 	//"bytes"
 	"crypto/tls"
-	"net/url"
-
+	"encoding/json"
 	//"encoding/json"
 	"fmt"
 	"io"
 	"io/ioutil"
+	corev1 "k8s.io/api/core/v1"
 	"net/http"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -46,6 +46,18 @@ type LinkStatus struct {
 	Created     string
 }
 
+type ServiceEndpoint struct {
+	Name   string      `json:"name"`
+	Target string      `json:"target"`
+	Ports  map[int]int `json:"ports,omitempty"`
+}
+
+type ServiceDefinition struct {
+	Name      string            `json:"name"`
+	Protocol  string            `json:"protocol"`
+	Ports     []int             `json:"ports"`
+	Endpoints []ServiceEndpoint `json:"endpoints"`
+}
 
 
 func accessConsole(method string, url string, path string, body io.Reader, user string, pass string) (string, error) {
@@ -84,8 +96,8 @@ func accessConsole(method string, url string, path string, body io.Reader, user 
 
 	strResp := string(bodyResp)
 
-	fmt.Println("Resp Body => ", strResp)
-	fmt.Println("Resp Header => ", resp.Header)
+	//fmt.Println("Resp Body => ", strResp)
+	//fmt.Println("Resp Header => ", resp.Header)
 
 	return strResp, nil
 }
@@ -102,111 +114,467 @@ func runCmd(cmd string, args ...string) bool {
 	return true
 }
 
+// Check if a linkStatus structure contains an element based on its name
+func findInSlice(elements []LinkStatus, key string) bool {
+
+	for _, element := range elements {
+		if element.Name == key {
+			return true
+		}
+	}
+	return false
+}
+
+// Return the first element in slice1 not found in slice2
+func findNewLink(elementsAfter []LinkStatus, elementsBefore []LinkStatus) (string, error) {
+	founds := 0
+	newLink := ""
+	for _, nameAfter := range elementsAfter {
+		if findInSlice(elementsBefore, nameAfter.Name) == false {
+			newLink = nameAfter.Name
+			founds++
+		}
+	}
+	if founds == 1 {
+		return newLink, nil
+	} else {
+		return "", fmt.Errorf("More than 1 newLink found")
+	}
+}
+
+func testAccessDATA(consoleUrl string) (string, error) {
+
+	dataConsole, err := accessConsole("GET", consoleUrl, "DATA", nil, ADMUSER, ADMPASS)
+	if err != nil {
+		return "", fmt.Errorf("Unable to retrieve /DATA from %s", consoleUrl)
+	}
+	return dataConsole, nil
+}
+
+func getTokens(consoleUrl string) ([]TokenState, error) {
+
+	tokensCreatedStr, err := accessConsole("GET", consoleUrl, "tokens", nil, ADMUSER, ADMPASS)
+	if err != nil {
+		return []TokenState{}, fmt.Errorf("Unable to list tokens from %s", consoleUrl)
+	}
+
+	var tokensCreated []TokenState
+	err = json.Unmarshal([]byte(tokensCreatedStr), &tokensCreated)
+	if err != nil {
+		return []TokenState{}, fmt.Errorf("Unable to unmarshal tokens list for %s", consoleUrl)
+	}
+	return tokensCreated, nil
+}
+
+func getOneToken(consoleUrl string, claimID string) (TokenState, error) {
+
+	getPath := fmt.Sprintf("tokens/%s", claimID)
+
+	tokenGotStr, err := accessConsole("GET", consoleUrl, getPath, nil, ADMUSER, ADMPASS)
+	if err != nil {
+		return TokenState{}, fmt.Errorf("Unable to retrieve claim %s from %s", claimID, consoleUrl)
+	}
+
+	var tokenGot TokenState
+	err = json.Unmarshal([]byte(tokenGotStr), &tokenGot)
+	if err != nil {
+		return TokenState{}, fmt.Errorf("Unable to unmarshal retrieved claim %s", claimID)
+	}
+	return tokenGot, nil
+}
+
+func downloadClaimToken(consoleUrl string, claimID string) (corev1.Secret, error) {
+
+	postPath := fmt.Sprintf("downloadclaim/%s", claimID)
+
+	tokenDownloadedStr, err := accessConsole("GET", consoleUrl, postPath, nil, ADMUSER, ADMPASS)
+	if err != nil {
+		return corev1.Secret{}, fmt.Errorf("Unable to download claim %s from %s", claimID, consoleUrl)
+	}
+
+	var tokenDownloaded corev1.Secret
+	err = json.Unmarshal([]byte(tokenDownloadedStr), &tokenDownloaded)
+	if err != nil {
+		return corev1.Secret{}, fmt.Errorf("Unable to unmarshal downloaded claim %s", claimID)
+	}
+	return tokenDownloaded, nil
+}
+
+func createClaimToken(consoleUrl string, minutes int, uses int) (corev1.Secret, error) {
+
+	tokenExpires := time.Now().Add(15 * time.Minute).Format(time.RFC3339)
+	postPath := fmt.Sprintf("tokens?expiration=%v&uses=%d", tokenExpires, uses)
+
+	tokenCreatedStr, err := accessConsole("POST", consoleUrl, postPath, nil, ADMUSER, ADMPASS)
+	if err != nil {
+		return corev1.Secret{}, fmt.Errorf("Unable to create token for %s", consoleUrl)
+	}
+
+	var tokenCreated corev1.Secret
+	err = json.Unmarshal([]byte(tokenCreatedStr), &tokenCreated)
+	//fmt.Println("Debug Token Created = ", tokenCreatedStr)
+	if err != nil {
+		return corev1.Secret{}, fmt.Errorf("Unable to unmarshal token for %s", consoleUrl)
+	}
+	return tokenCreated, nil
+}
+
+func delToken(consoleUrl string, tokenName string) (error) {
+	_, err := accessConsole("DELETE", consoleUrl, "tokens/" + tokenName, nil, ADMUSER, ADMPASS)
+	if err != nil {
+		return fmt.Errorf("Unable to delete claim token %s from %s", tokenName, consoleUrl)
+	}
+	return nil
+}
+
+func getLinks(consoleUrl string) ([]LinkStatus, error) {
+
+	linksCreatedSTR, err := accessConsole("GET", consoleUrl, "links", nil, ADMUSER, ADMPASS)
+	if err != nil {
+		return []LinkStatus{}, fmt.Errorf("Unable to list links from %s", consoleUrl)
+	}
+
+	var linksCreated []LinkStatus
+	err = json.Unmarshal([]byte(linksCreatedSTR), &linksCreated)
+	if err != nil {
+		return []LinkStatus{}, fmt.Errorf("Unable to unmarshal link list for %s", consoleUrl)
+	}
+	return linksCreated, nil
+}
+
+func getOneLink(consoleUrl string, linkID string) (LinkStatus, error) {
+
+	getPath := fmt.Sprintf("links/%s", linkID)
+
+	linkGotStr, err := accessConsole("GET", consoleUrl, getPath, nil, ADMUSER, ADMPASS)
+	if err != nil {
+		return LinkStatus{}, fmt.Errorf("Unable to retrieve link %s from %s", linkID, consoleUrl)
+	}
+
+	var linkGot LinkStatus
+	err = json.Unmarshal([]byte(linkGotStr), &linkGot)
+	if err != nil {
+		return LinkStatus{}, fmt.Errorf("Unable to unmarshal retrieved link %s", linkID)
+	}
+	return linkGot, nil
+}
+
+func createLink(consoleUrl string, cost int, secret corev1.Secret ) error {
+
+	postPath := fmt.Sprintf("links?cost=%d", cost)
+	secretSTR, err := json.Marshal(secret)
+	if err != nil {
+		return fmt.Errorf("Unable to unmarshal token for %s", consoleUrl)
+	}
+
+	_, err = accessConsole("POST", consoleUrl, postPath, bytes.NewReader(secretSTR), ADMUSER, ADMPASS)
+	if err != nil {
+		return fmt.Errorf("Unable to create token for %s", consoleUrl)
+	}
+	return nil
+}
+
+func delLink(consoleUrl string, linkName string) (error) {
+	_, err := accessConsole("DELETE", consoleUrl, "links/" + linkName, nil, ADMUSER, ADMPASS)
+	if err != nil {
+		return fmt.Errorf("Unable to delete link %s from %s", linkName, consoleUrl)
+	}
+	return nil
+}
+
+func lastSlice(fullString string, sep string) string {
+	slicedString := strings.Split(fullString, sep)
+    return string(slicedString[len(slicedString)-1])
+}
+
+func printLink(link LinkStatus) {
+	fmt.Printf("\nNAME => %s\n", link.Name)
+	fmt.Println("  URL => ", link.Url)
+	fmt.Println("  COST => ", link.Cost)
+	fmt.Println("  CONFIGURED => ", link.Configured)
+	fmt.Println("  CONNECTED => ", link.Connected)
+	fmt.Println("  DESCRIPTION => ", link.Description)
+	fmt.Println("  CREATED => ", link.Created)
+}
+
+func printClaim(claim TokenState) {
+	fmt.Printf("\nNAME => %s\n", claim.Name)
+	fmt.Println("  EXPIRY => ", *claim.ClaimExpiration)
+	if claim.ClaimsMade == nil {
+		fmt.Println("  CLAIMS MADE => ", 0)
+	} else {
+		fmt.Println("  CLAIMS MADE => ", *claim.ClaimsMade)
+	}
+	fmt.Println("  CLAIMS REMAINING => ", *claim.ClaimsRemaining)
+}
+
+func printService(svc ServiceDefinition) {
+	fmt.Printf("\nNAME => %s\n", svc.Name)
+	fmt.Println("  PROTOCOL => ", svc.Protocol)
+
+	for _, port := range svc.Ports {
+		fmt.Println("  PORTS => ", port)
+	}
+
+	for _, endpoint := range svc.Endpoints {
+		fmt.Println("  ENDPOINT NAME => ", endpoint.Name)
+		fmt.Println("  ENDPOINT TARGET => ", endpoint.Target)
+		for _, port := range endpoint.Ports {
+			fmt.Println("  ENDPOINT PORTS => ", port)
+		}
+	}
+}
+
+func getServices(consoleUrl string) ([]ServiceDefinition, error) {
+
+	servicesStr, err := accessConsole("GET", consoleUrl, "services", nil, ADMUSER, ADMPASS)
+	if err != nil {
+		return []ServiceDefinition{}, fmt.Errorf("Unable to list services from %s", consoleUrl)
+	}
+
+	var services []ServiceDefinition
+	err = json.Unmarshal([]byte(servicesStr), &services)
+	if err != nil {
+		return []ServiceDefinition{}, fmt.Errorf("Unable to unmarshal service list for %s", consoleUrl)
+	}
+	return services, nil
+}
+
+
 func main() {
 
 	fmt.Println("Here we go !!")
 
 	//
-	// +++++ ACCESS TO /DATA  +++++++
+	// +++++ /DATA
 	//
-	//fmt.Println("Private Console")
-	//dataPriv, err := accessConsole("GET", PRIVCONSOLE, "DATA", nil, ADMUSER, ADMPASS)
-	//if err != nil {
-	//	fmt.Println("Erro 001")
-	//	os.Exit(1)
-	//}
-	//fmt.Println("data from private => ", dataPriv)
-	//
-	//fmt.Println("Public Console")
-	//dataPub, err := accessConsole("GET", PUBCONSOLE, "DATA", nil, ADMUSER, ADMPASS)
-	//if err != nil {
-	//	fmt.Println("Erro 002")
-	//	os.Exit(1)
-	//}
-	//fmt.Println("data from private => ", dataPub)
-
-	//
-	// CREATE CLAIM MANUALLY VIA SKUPPER
-	//
-    // Create a claim token manually in west - public"
-	//ok := runCmd("skupper", "token", "create", "/tmp/token-west-renato01.yaml", "--expiry", "25m0s", "--name", "renato01", "--password", "rena-senha", "--token-type", "claim", "--uses",  "2", "-n", "west")
-	//if !ok {
-	//	fmt.Println("Error to create the claim 01 for West")
-	//}
-
-	//
-	// +++++ CREATE CLAIM VIA API  +++++++
-	//
-
-	tokenExpires := time.Now().Add(15 * time.Minute).Format(time.RFC3339)
-	tokenUses := 3
-	postPath := fmt.Sprintf("tokens?expiration=%v&uses=%d", tokenExpires, tokenUses)
-
-	//postPath := "tokens?expiration=60m&uses=3"
-	tokenCreatedPublic, err := accessConsole("POST", PUBCONSOLE, postPath, nil, ADMUSER, ADMPASS)
+	_, err := testAccessDATA(PUBCONSOLE)
 	if err != nil {
-		fmt.Println("Erro 003")
-		os.Exit(1)
-	}
-	fmt.Println("Token Created in Public", tokenCreatedPublic)
-
-	// Tokens from pub
-	tokenPub, err := accessConsole("GET", PUBCONSOLE, "tokens", nil, ADMUSER, ADMPASS)
-	if err != nil {
-		fmt.Println("Erro 003")
-		os.Exit(1)
-	}
-	fmt.Println("Tokens from pub => ", tokenPub)
-
-	//
-	// CREATE A LINK in PRIVATE
-	//
-	data := url.Values{}
-	data.Set("cost", "20")
-	if err != nil {
-		fmt.Println("Erro 010")
-		os.Exit(1)
-	}
-	_, err = accessConsole("POST", PRIVCONSOLE, "links?cost=20", strings.NewReader(tokenCreatedPublic), ADMUSER, ADMPASS)
-	if err != nil {
-		fmt.Println("Erro 010")
-		os.Exit(1)
+		fmt.Println("Unable to access /DATA from pubConsole")
 	}
 
-	// List links from pub
-	linkPriv, err := accessConsole("GET", PRIVCONSOLE, "links", nil, ADMUSER, ADMPASS)
+	_, err = testAccessDATA(PRIVCONSOLE)
 	if err != nil {
-		fmt.Println("Erro 003")
-		os.Exit(1)
+		fmt.Println("Unable to access /DATA from privConsole")
 	}
-	fmt.Println("Links from Priv => ", linkPriv)
-
-	// Tokens from pub
-	tokenPub, err = accessConsole("GET", PUBCONSOLE, "tokens", nil, ADMUSER, ADMPASS)
-	if err != nil {
-		fmt.Println("Erro 003")
-		os.Exit(1)
-	}
-	fmt.Println("Tokens from pub => ", tokenPub)
-
 
 	//
-	// REMOVE TOKENS VIA DELETE
+	// +++++ LIST TOKENS IN PUB
 	//
-    fmt.Println("Removendo tokens")
-	for _, elem := range strings.Split(tokenPub, ",") {
-		if strings.Contains(elem, "name") {
-			tname := strings.Split(elem, ":")[1]
-			tname = strings.Trim(tname, " ")
-			name  := strings.Split(tname, "\"")[1]
-			fmt.Println("Removing token => ", name)
-			_, err := accessConsole("DELETE", PUBCONSOLE, "tokens/" + name, nil, ADMUSER, ADMPASS)
-			if err != nil {
-				fmt.Println("Unable to remove token => ", name)
-			} else {
-				fmt.Printf("Token %s removed \n ", name)
-			}
+	fmt.Printf("\nListing Claims Tokens in PUB\n")
+	tokensInPub, err := getTokens(PUBCONSOLE)
+	for _, token := range tokensInPub {
+		printClaim(token)
+	}
+
+	//
+	// +++++ CREATE CLAIM TOKEN VIA API
+	//
+	fmt.Printf("\nCreating a Claim Tokens in PUB via API\n")
+	pubClaimCreated, err := createClaimToken(PUBCONSOLE, 5, 2)
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Printf("Claim created with ID %s\n", pubClaimCreated.Name)
+	fmt.Printf("Claim created with URL %s\n", pubClaimCreated.Annotations["skupper.io/url"])
+
+	//
+	// +++++ DOWNLOAD A CLAIM
+	//
+	fmt.Printf("\nDownloading a Claim Tokens from PUB via API\n")
+	claimToDownload := lastSlice(pubClaimCreated.Annotations["skupper.io/url"], "/")
+	pubClaimDownloaded, err := downloadClaimToken(PUBCONSOLE, claimToDownload)
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Printf("Claim Downloaded with ID %s\n", pubClaimDownloaded.Name)
+	fmt.Printf("Claim downloaded with URL %s\n", pubClaimDownloaded.Annotations["skupper.io/url"])
+
+	//
+	// +++++ LIST TOKENS IN PUB
+	//
+	fmt.Printf("\nListing Claim Tokens in PUB after creation\n")
+	tokensInPub, err = getTokens(PUBCONSOLE)
+	for _, token := range tokensInPub {
+		printClaim(token)
+	}
+
+	//
+	// +++++ LIST LINKS IN PRIV
+	//
+	fmt.Printf("\nListing links in PRIV before link creation\n")
+	linksInPrivBefore, err := getLinks(PRIVCONSOLE)
+	for _, link := range linksInPrivBefore {
+		printLink(link)
+	}
+
+	//
+	// +++++ CREATE LINK IN PRIVATE
+	//
+	err = createLink(PRIVCONSOLE, 4, pubClaimCreated )
+	if err != nil {
+		fmt.Println(err)
+	}
+	// Wait until link get established
+	time.Sleep(30 * time.Second)
+
+	//
+	// +++++ LIST LINKS IN PRIV AFTER LINK CREATION
+	//
+	fmt.Printf("\nListing links in PRIV after link creation\n")
+	linksInPrivAfter, err := getLinks(PRIVCONSOLE)
+	for _, link := range linksInPrivAfter {
+		printLink(link)
+	}
+
+	newLink, err  := findNewLink(linksInPrivAfter, linksInPrivBefore)
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Printf("The new link created is %s\n", newLink)
+
+	//
+	// +++++ RETRIEVE ONE SPECIFIC LINK
+	//
+	newLinkData, err := getOneLink(PRIVCONSOLE, newLink)
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Printf("\nDetails about the first link\n")
+	printLink(newLinkData)
+
+	//
+	// +++++ GET CLAIM TOKENS USED IN LINK AND CHECK ITS USES
+	//
+	claimToGet := lastSlice(pubClaimCreated.Annotations["skupper.io/url"], "/")
+	retrievedClaim, err := getOneToken(PUBCONSOLE, claimToGet)
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Printf("\nThis is the token after we used it 1 time")
+	printClaim(retrievedClaim)
+
+	//
+	// +++++ CREATE A SECOND LINK IN PRIVATE
+	//
+	err = createLink(PRIVCONSOLE, 3, pubClaimDownloaded )
+	if err != nil {
+		fmt.Println(err)
+	}
+	// Wait until link get established
+	time.Sleep(30 * time.Second)
+
+	//
+	// +++++ LIST LINKS IN PRIV AFTER SECOND LINK CREATION
+	//
+	linksInPrivBefore = linksInPrivAfter
+	fmt.Printf("\nListing links in PRIV after second link creation\n")
+	linksInPrivAfter, err = getLinks(PRIVCONSOLE)
+	for _, link := range linksInPrivAfter {
+		printLink(link)
+	}
+
+	newLink, err  = findNewLink(linksInPrivAfter, linksInPrivBefore)
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Printf("The second link created is %s\n", newLink)
+	newLinkData, err = getOneLink(PRIVCONSOLE, newLink)
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Printf("\nDetails about the second link")
+	printLink(newLinkData)
+
+	//
+	// +++++ GET CLAIM TOKENS USED IN LINK AND CHECK ITS USES
+	//
+	claimToGet = lastSlice(pubClaimDownloaded.Annotations["skupper.io/url"], "/")
+	retrievedClaim, err = getOneToken(PUBCONSOLE, claimToGet)
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Printf("\nThis is the token after we used it 2 times")
+	printClaim(retrievedClaim)
+
+	//
+	// +++++ TRY TO CREATE A THIRD LINK IN PRIVATE, IT MUST FAIL
+	// +++++ BECAUSE THERE ARE NO AVAILABLE CLAIMS
+	//
+	linksInPrivBefore = linksInPrivAfter
+	err = createLink(PRIVCONSOLE, 2, pubClaimDownloaded )
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Printf("\nListing links in PRIV after third link creation\n")
+	linksInPrivAfter, err = getLinks(PRIVCONSOLE)
+	for _, link := range linksInPrivAfter {
+		printLink(link)
+	}
+
+	newLink, err  = findNewLink(linksInPrivAfter, linksInPrivBefore)
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Printf("The third link created is %s\n", newLink)
+
+	newLinkData, err = getOneLink(PRIVCONSOLE, newLink)
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Printf("\nDetails about the third link")
+	printLink(newLinkData)
+
+	//
+	// +++++ List Services from Pub
+	//
+	fmt.Printf("\nServices in PUB")
+	svcsPub, err := getServices(PUBCONSOLE)
+	if err != nil {
+		fmt.Println(err)
+	}
+	for _, svcPub := range svcsPub {
+		printService(svcPub)
+	}
+
+	//
+	// +++++ List Services from Priv
+	//
+	fmt.Printf("\nServices in PRIV")
+	svcsPriv, err := getServices(PRIVCONSOLE)
+	if err != nil {
+		fmt.Println(err)
+	}
+	for _, svcPriv := range svcsPriv {
+		printService(svcPriv)
+	}
+	
+
+	//
+	// +++++ REMOVE LINKS FROM PRIV
+	//
+	fmt.Printf("\nRemoving links from PRIV\n")
+	linksInPriv, err := getLinks(PRIVCONSOLE)
+	for _, link := range linksInPriv {
+		err := delLink(PRIVCONSOLE, link.Name)
+		if err != nil {
+			fmt.Println(err)
+		} else {
+			fmt.Printf(  "Link %s removed from PRIV\n", link.Name)
 		}
 	}
 
+	//
+	// +++++ REMOVE CLAIM TOKENS FROM PUB
+	//
+	fmt.Printf("\nRemoving Claim Tokens from PUB\n")
+	tokensInPub, err = getTokens(PUBCONSOLE)
+	for _, token := range tokensInPub {
+		err := delToken(PUBCONSOLE, token.Name)
+		if err != nil {
+			fmt.Println(err)
+		} else {
+			fmt.Printf("Claim token %s removed from Pub\n",token.Name)
+		}
+	}
 }
