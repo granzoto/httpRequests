@@ -31,11 +31,6 @@ type TokenState struct {
 	Created         string     `json:"created,omitempty"`
 }
 
-type TokenOptions struct {
-	Expiry time.Duration	`json:"expiration"`
-	Uses   int				`json:"uses"`
-}
-
 type LinkStatus struct {
 	Name        string
 	Url         string
@@ -57,6 +52,26 @@ type ServiceDefinition struct {
 	Protocol  string            `json:"protocol"`
 	Ports     []int             `json:"ports"`
 	Endpoints []ServiceEndpoint `json:"endpoints"`
+}
+
+type PortDescription struct {
+	Name string `json:"name"`
+	Port int    `json:"port"`
+}
+
+type ServiceTarget struct {
+	Name  string            `json:"name"`
+	Type  string            `json:"type"`
+	Ports []PortDescription `json:"ports,omitempty"`
+}
+
+type ServiceOptions struct {
+	Address     string            `json:"address"`
+	Protocol    string            `json:"protocol"`
+	Ports       []int             `json:"ports"`
+	TargetPorts map[int]int       `json:"targetPorts,omitempty"`
+	Labels      map[string]string `json:"labels,omitempty"`
+	Target      ServiceTarget     `json:"target"`
 }
 
 
@@ -98,6 +113,7 @@ func accessConsole(method string, url string, path string, body io.Reader, user 
 
 	//fmt.Println("Resp Body => ", strResp)
 	//fmt.Println("Resp Header => ", resp.Header)
+	//fmt.Println("Resp Status => ", resp.StatusCode)
 
 	return strResp, nil
 }
@@ -151,6 +167,7 @@ func testAccessDATA(consoleUrl string) (string, error) {
 	return dataConsole, nil
 }
 
+//  TOKENS FUNCTIONS
 func getTokens(consoleUrl string) ([]TokenState, error) {
 
 	tokensCreatedStr, err := accessConsole("GET", consoleUrl, "tokens", nil, ADMUSER, ADMPASS)
@@ -227,6 +244,19 @@ func delToken(consoleUrl string, tokenName string) (error) {
 	return nil
 }
 
+func printClaim(claim TokenState) {
+	fmt.Printf("\nNAME => %s\n", claim.Name)
+	fmt.Println("  EXPIRY => ", *claim.ClaimExpiration)
+	if claim.ClaimsMade == nil {
+		fmt.Println("  CLAIMS MADE => ", 0)
+	} else {
+		fmt.Println("  CLAIMS MADE => ", *claim.ClaimsMade)
+	}
+	fmt.Println("  CLAIMS REMAINING => ", *claim.ClaimsRemaining)
+}
+
+
+//  LINKS FUNCTIONS
 func getLinks(consoleUrl string) ([]LinkStatus, error) {
 
 	linksCreatedSTR, err := accessConsole("GET", consoleUrl, "links", nil, ADMUSER, ADMPASS)
@@ -297,15 +327,62 @@ func printLink(link LinkStatus) {
 	fmt.Println("  CREATED => ", link.Created)
 }
 
-func printClaim(claim TokenState) {
-	fmt.Printf("\nNAME => %s\n", claim.Name)
-	fmt.Println("  EXPIRY => ", *claim.ClaimExpiration)
-	if claim.ClaimsMade == nil {
-		fmt.Println("  CLAIMS MADE => ", 0)
-	} else {
-		fmt.Println("  CLAIMS MADE => ", *claim.ClaimsMade)
+
+//  SERVICES FUNCTIONS
+func getServices(consoleUrl string) ([]ServiceDefinition, error) {
+
+	servicesStr, err := accessConsole("GET", consoleUrl, "services", nil, ADMUSER, ADMPASS)
+	if err != nil {
+		return []ServiceDefinition{}, fmt.Errorf("Unable to list services from %s", consoleUrl)
 	}
-	fmt.Println("  CLAIMS REMAINING => ", *claim.ClaimsRemaining)
+
+	var services []ServiceDefinition
+	err = json.Unmarshal([]byte(servicesStr), &services)
+	if err != nil {
+		return []ServiceDefinition{}, fmt.Errorf("Unable to unmarshal service list for %s", consoleUrl)
+	}
+	return services, nil
+}
+
+func createService(consoleUrl string, service ServiceOptions) error {
+
+	postPath := "services"
+	serviceSTR, err := json.Marshal(service)
+	if err != nil {
+		return fmt.Errorf("Unable to unmarshal service for %s", consoleUrl)
+	}
+
+	_, err = accessConsole("POST", consoleUrl, postPath, bytes.NewReader(serviceSTR), ADMUSER, ADMPASS)
+	if err != nil {
+		return fmt.Errorf("Unable to create service for %s", consoleUrl)
+	}
+	return nil
+}
+
+func getOneService(consoleUrl string, serviceID string) (ServiceDefinition, error) {
+
+	getPath := fmt.Sprintf("services/%s", serviceID)
+
+	serviceStr, err := accessConsole("GET", consoleUrl, getPath, nil, ADMUSER, ADMPASS)
+	if err != nil {
+		return ServiceDefinition{}, fmt.Errorf("Unable to retrieve service %s", serviceID)
+	}
+
+	var service ServiceDefinition
+	err = json.Unmarshal([]byte(serviceStr), &service)
+	if err != nil {
+		return ServiceDefinition{}, fmt.Errorf("Unable to unmarshal service %s", serviceID)
+	}
+	return service, nil
+}
+
+func delService(consoleUrl string, serviceName string) (error) {
+
+	_, err := accessConsole("DELETE", consoleUrl, "services/" + serviceName, nil, ADMUSER, ADMPASS)
+	if err != nil {
+		return fmt.Errorf("Unable to delete service %s from %s", serviceName, consoleUrl)
+	}
+	return nil
 }
 
 func printService(svc ServiceDefinition) {
@@ -325,20 +402,46 @@ func printService(svc ServiceDefinition) {
 	}
 }
 
-func getServices(consoleUrl string) ([]ServiceDefinition, error) {
+//  TARGET FUNCTIONS
+func getTargets(consoleUrl string) ([]ServiceTarget, error) {
 
-	servicesStr, err := accessConsole("GET", consoleUrl, "services", nil, ADMUSER, ADMPASS)
+	getPath := fmt.Sprintf("targets")
+
+	targetsStr, err := accessConsole("GET", consoleUrl, getPath, nil, ADMUSER, ADMPASS)
 	if err != nil {
-		return []ServiceDefinition{}, fmt.Errorf("Unable to list services from %s", consoleUrl)
+		return []ServiceTarget{}, fmt.Errorf("Unable to list targets from %s", consoleUrl)
 	}
 
-	var services []ServiceDefinition
-	err = json.Unmarshal([]byte(servicesStr), &services)
+	var targets []ServiceTarget
+	err = json.Unmarshal([]byte(targetsStr), &targets)
 	if err != nil {
-		return []ServiceDefinition{}, fmt.Errorf("Unable to unmarshal service list for %s", consoleUrl)
+		return []ServiceTarget{}, fmt.Errorf("Unable to unmarshal targets from %s", consoleUrl)
 	}
-	return services, nil
+	return targets, nil
 }
+
+func printTargets(target ServiceTarget) {
+
+	fmt.Printf("\nNAME => %s\n", target.Name)
+	fmt.Println("  TYPE => ", target.Type)
+
+	for _, port := range target.Ports {
+		fmt.Println("  PORT NAME => ", port.Name)
+		fmt.Println("  |--- PORT => ", port.Port)
+	}
+}
+
+
+// General Functions
+func getGenericEndpoint(consoleUrl string, getPath string) (string, error) {
+
+	genEndPointStr, err := accessConsole("GET", consoleUrl, getPath, nil, ADMUSER, ADMPASS)
+	if err != nil {
+		return "", fmt.Errorf("Unable to retrieve endpoint %s", getPath)
+	}
+	return genEndPointStr, nil
+}
+
 
 
 func main() {
@@ -361,7 +464,7 @@ func main() {
 	//
 	// +++++ LIST TOKENS IN PUB
 	//
-	fmt.Printf("\nListing Claims Tokens in PUB\n")
+	fmt.Printf("\nListing Claims Tokens in PUB\n============================================\n")
 	tokensInPub, err := getTokens(PUBCONSOLE)
 	for _, token := range tokensInPub {
 		printClaim(token)
@@ -370,7 +473,7 @@ func main() {
 	//
 	// +++++ CREATE CLAIM TOKEN VIA API
 	//
-	fmt.Printf("\nCreating a Claim Tokens in PUB via API\n")
+	fmt.Printf("\nCreating a Claim Tokens in PUB via API\n============================================\n")
 	pubClaimCreated, err := createClaimToken(PUBCONSOLE, 5, 2)
 	if err != nil {
 		fmt.Println(err)
@@ -381,7 +484,7 @@ func main() {
 	//
 	// +++++ DOWNLOAD A CLAIM
 	//
-	fmt.Printf("\nDownloading a Claim Tokens from PUB via API\n")
+	fmt.Printf("\nDownloading a Claim Tokens from PUB via API\n============================================\n")
 	claimToDownload := lastSlice(pubClaimCreated.Annotations["skupper.io/url"], "/")
 	pubClaimDownloaded, err := downloadClaimToken(PUBCONSOLE, claimToDownload)
 	if err != nil {
@@ -393,7 +496,7 @@ func main() {
 	//
 	// +++++ LIST TOKENS IN PUB
 	//
-	fmt.Printf("\nListing Claim Tokens in PUB after creation\n")
+	fmt.Printf("\nListing Claim Tokens in PUB after creation\n============================================\n")
 	tokensInPub, err = getTokens(PUBCONSOLE)
 	for _, token := range tokensInPub {
 		printClaim(token)
@@ -402,7 +505,7 @@ func main() {
 	//
 	// +++++ LIST LINKS IN PRIV
 	//
-	fmt.Printf("\nListing links in PRIV before link creation\n")
+	fmt.Printf("\nListing links in PRIV before first link creation\n============================================\n")
 	linksInPrivBefore, err := getLinks(PRIVCONSOLE)
 	for _, link := range linksInPrivBefore {
 		printLink(link)
@@ -421,7 +524,7 @@ func main() {
 	//
 	// +++++ LIST LINKS IN PRIV AFTER LINK CREATION
 	//
-	fmt.Printf("\nListing links in PRIV after link creation\n")
+	fmt.Printf("\nListing links in PRIV after first link creation\n============================================\n")
 	linksInPrivAfter, err := getLinks(PRIVCONSOLE)
 	for _, link := range linksInPrivAfter {
 		printLink(link)
@@ -431,7 +534,7 @@ func main() {
 	if err != nil {
 		fmt.Println(err)
 	}
-	fmt.Printf("The new link created is %s\n", newLink)
+	fmt.Printf("The first link created is %s\n", newLink)
 
 	//
 	// +++++ RETRIEVE ONE SPECIFIC LINK
@@ -440,7 +543,7 @@ func main() {
 	if err != nil {
 		fmt.Println(err)
 	}
-	fmt.Printf("\nDetails about the first link\n")
+	fmt.Printf("\nDetails about the first link\n============================================\n")
 	printLink(newLinkData)
 
 	//
@@ -468,7 +571,7 @@ func main() {
 	// +++++ LIST LINKS IN PRIV AFTER SECOND LINK CREATION
 	//
 	linksInPrivBefore = linksInPrivAfter
-	fmt.Printf("\nListing links in PRIV after second link creation\n")
+	fmt.Printf("\nListing links in PRIV after second link creation\n============================================\n")
 	linksInPrivAfter, err = getLinks(PRIVCONSOLE)
 	for _, link := range linksInPrivAfter {
 		printLink(link)
@@ -483,7 +586,7 @@ func main() {
 	if err != nil {
 		fmt.Println(err)
 	}
-	fmt.Printf("\nDetails about the second link")
+	fmt.Printf("\nDetails about the second link\n============================================\n")
 	printLink(newLinkData)
 
 	//
@@ -494,7 +597,7 @@ func main() {
 	if err != nil {
 		fmt.Println(err)
 	}
-	fmt.Printf("\nThis is the token after we used it 2 times")
+	fmt.Printf("\nThis is the token after we used it 2 times\n============================================\n")
 	printClaim(retrievedClaim)
 
 	//
@@ -506,12 +609,11 @@ func main() {
 	if err != nil {
 		fmt.Println(err)
 	}
-	fmt.Printf("\nListing links in PRIV after third link creation\n")
+	fmt.Printf("\nListing links in PRIV after third link creation\n============================================\n")
 	linksInPrivAfter, err = getLinks(PRIVCONSOLE)
 	for _, link := range linksInPrivAfter {
 		printLink(link)
 	}
-
 	newLink, err  = findNewLink(linksInPrivAfter, linksInPrivBefore)
 	if err != nil {
 		fmt.Println(err)
@@ -526,34 +628,148 @@ func main() {
 	printLink(newLinkData)
 
 	//
+	// +++++ CREATE A SERVICE IN PRIV
+	//
+	newsvc := ServiceOptions{
+		Address:     "hello-world-backend",
+		Protocol:    "http",
+		Ports:       []int{8080},
+		TargetPorts: map[int]int{8080: 8080},
+		Labels:      nil,
+		Target:      ServiceTarget{
+			Name:  "hello-world-backend",
+			Type:  "deployment",
+			Ports: []PortDescription{
+				 { Name: "8080",
+				   Port: 8080},
+			},
+		},
+	}
+	fmt.Printf("\nCreating service hello-world-backend in PRIV\n============================================\n")
+	err = createService(PRIVCONSOLE, newsvc)
+	if err != nil {
+		fmt.Println("Unable to create service ", err)
+	}
+
+	//
 	// +++++ List Services from Pub
 	//
-	fmt.Printf("\nServices in PUB")
+	fmt.Printf("\nListing Services in PUB\n============================================\n")
 	svcsPub, err := getServices(PUBCONSOLE)
 	if err != nil {
 		fmt.Println(err)
 	}
 	for _, svcPub := range svcsPub {
+		if svcPub.Endpoints == nil {
+			fmt.Println("Service Exposed through Skupper")
+		} else {
+			fmt.Println("Service Exposed BY Skupper")
+		}
 		printService(svcPub)
 	}
 
 	//
 	// +++++ List Services from Priv
 	//
-	fmt.Printf("\nServices in PRIV")
+	fmt.Printf("\nListing Services in PRIV\n============================================\n")
 	svcsPriv, err := getServices(PRIVCONSOLE)
 	if err != nil {
 		fmt.Println(err)
 	}
 	for _, svcPriv := range svcsPriv {
+		if svcPriv.Endpoints == nil {
+			fmt.Println("Service Exposed through Skupper")
+		} else {
+			fmt.Println("Service Exposed BY Skupper")
+		}
 		printService(svcPriv)
 	}
-	
+
+	//
+	// +++++ RETRIEVE ONE SPECIFIC SERVICE
+	//
+	fmt.Printf("\nRetrieve one specific service in PRIV\n============================================\n")
+	oneService, err := getOneService(PRIVCONSOLE, "hello-world-backend")
+	if err != nil {
+		fmt.Println(err)
+	}
+	if oneService.Endpoints == nil {
+		fmt.Println("Service Exposed through Skupper")
+	} else {
+		fmt.Println("Service Exposed BY Skupper")
+	}
+	printService(oneService)
+
+	//
+	// +++++ LIST TARGETS FROM A SERVICE
+	//
+	fmt.Printf("\nListing Targets in PRIV\n============================================\n")
+	targetsInSvc, err := getTargets(PRIVCONSOLE)
+	if err != nil {
+		fmt.Println(err)
+	}
+	for _, target := range targetsInSvc {
+		printTargets(target)
+	}
+
+	//
+	// +++++ SERVICECHECK
+	//
+	fmt.Printf("\nChecking Service hello-world-backend\n============================================\n")
+	chkSvc, err := getGenericEndpoint(PRIVCONSOLE, "servicecheck/hello-world-backend")
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Println(chkSvc)
+
+	//
+	// +++++ GET VERSION
+	//
+	fmt.Printf("\nGet Versions\n============================================\n")
+	version, err := getGenericEndpoint(PUBCONSOLE, "version")
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Println(version)
+
+	//
+	// +++++ GET SITE
+	//
+	fmt.Printf("\nGet Site\n============================================\n")
+	site, err := getGenericEndpoint(PUBCONSOLE, "site")
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Println(site)
+
+	//
+	// +++++ GET EVENTS
+	//
+	fmt.Printf("\nGet Events\n============================================\n")
+	events, err := getGenericEndpoint(PUBCONSOLE, "events")
+	if err != nil {
+		fmt.Println(err)
+	}
+	fmt.Println(events)
+
+	//
+	// +++++ REMOVE SERVICE
+	//
+	fmt.Printf("\nRemoving Targets from PRIV\n============================================\n")
+	svcsInPriv, err := getServices(PRIVCONSOLE)
+	for _, svc := range svcsInPriv {
+		err := delService(PRIVCONSOLE, svc.Name)
+		if err != nil {
+			fmt.Println(err)
+		} else {
+			fmt.Printf(  "Service %s removed from PRIV\n", svc.Name)
+		}
+	}
 
 	//
 	// +++++ REMOVE LINKS FROM PRIV
 	//
-	fmt.Printf("\nRemoving links from PRIV\n")
+	fmt.Printf("\nRemoving links from PRIV\n============================================\n")
 	linksInPriv, err := getLinks(PRIVCONSOLE)
 	for _, link := range linksInPriv {
 		err := delLink(PRIVCONSOLE, link.Name)
@@ -567,7 +783,7 @@ func main() {
 	//
 	// +++++ REMOVE CLAIM TOKENS FROM PUB
 	//
-	fmt.Printf("\nRemoving Claim Tokens from PUB\n")
+	fmt.Printf("\nRemoving Claim Tokens from PUB\n============================================\n")
 	tokensInPub, err = getTokens(PUBCONSOLE)
 	for _, token := range tokensInPub {
 		err := delToken(PUBCONSOLE, token.Name)
